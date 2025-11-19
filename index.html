@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Universe Engine V0.5 — True Sand Simulation</title>
+<style>
+    body { margin:0; overflow:hidden; background:black; font-family:Arial; }
+    #panel {
+        position:absolute; top:15px; left:15px; z-index:50;
+        background:rgba(255,255,255,0.92); padding:12px 15px; width:220px;
+        border-radius:8px; font-size:14px; box-shadow:0 0 10px rgba(0,0,0,0.45);
+    }
+    h2 { text-align:center; margin:0 0 10px; }
+    .section { margin-bottom:12px; }
+    label { font-weight:bold; display:block; margin-bottom:3px; }
+    input[type=range], select { width:100%; }
+    button {
+        width:100%; padding:8px; border:none; border-radius:6px; background:black;
+        color:white; cursor:pointer; font-weight:bold;
+    }
+    button:hover { background:#222; }
+    #debug {
+        position:absolute; top:10px; right:10px; color:#0f0; font-family:monospace;
+        background:rgba(0,0,0,0.4); padding:6px 8px; font-size:12px; border-radius:6px;
+        z-index:60;
+    }
+</style>
+</head>
+<body>
+
+<div id="panel">
+    <h2>Universe V0.5</h2>
+
+    <div class="section">
+        <label>Brush Size</label>
+        <input id="brushSize" type="range" min="1" max="25" value="6">
+    </div>
+
+    <div class="section">
+        <label>Element</label>
+        <select id="element">
+            <option value="sand">Sand</option>
+            <option value="water">Water</option>
+            <option value="gas">Gas</option>
+            <option value="fire">Fire</option>
+            <option value="life">Life Seed</option>
+            <option value="wall">Wall</option>
+            <option value="erase">Erase</option>
+        </select>
+    </div>
+
+    <button id="resetBtn">Reset</button>
+    <button id="saveBtn">Export JSON</button>
+    <button id="loadBtn">Import JSON</button>
+</div>
+
+<div id="debug">fps: 0</div>
+
+<canvas id="screen"></canvas>
+
+<script>
+/* ===========================================================
+    Universe Engine V0.5 — TRUE SAND SIMULATION
+    2D grid physics: falling sand, fluid, gas, fire, evolving life
+   =========================================================== */
+
+const canvas = document.getElementById("screen");
+const ctx = canvas.getContext("2d");
+
+let W = canvas.width = window.innerWidth;
+let H = canvas.height = window.innerHeight;
+
+// ---- GRID SETTINGS ----
+const CELL_SIZE = 3;            // visual size of each cell
+const COLS = Math.floor(W / CELL_SIZE);
+const ROWS = Math.floor(H / CELL_SIZE);
+
+// grid of cell objects
+let grid = [];
+let buffer = [];
+
+function emptyCell() {
+    return { type: 0, energy: 0, temp: 20 };
+}
+
+function makeGrid() {
+    grid = new Array(ROWS);
+    buffer = new Array(ROWS);
+    for (let y = 0; y < ROWS; y++) {
+        grid[y] = new Array(COLS);
+        buffer[y] = new Array(COLS);
+        for (let x = 0; x < COLS; x++) {
+            grid[y][x] = emptyCell();
+            buffer[y][x] = emptyCell();
+        }
+    }
+}
+
+makeGrid();
+
+// ---- ELEMENT IDS ----
+const EMPTY = 0;
+const SAND = 1;
+const WATER = 2;
+const GAS = 3;
+const FIRE = 4;
+const LIFE = 5;
+const WALL = 6;
+
+// ---- UI ----
+const brushSize = document.getElementById("brushSize");
+const elementSelect = document.getElementById("element");
+const resetBtn = document.getElementById("resetBtn");
+const saveBtn = document.getElementById("saveBtn");
+const loadBtn = document.getElementById("loadBtn");
+
+resetBtn.onclick = () => makeGrid();
+
+saveBtn.onclick = () => {
+    const data = JSON.stringify(grid);
+    const blob = new Blob([data], {type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "universe_v05.json";
+    a.click();
+};
+
+loadBtn.onclick = () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/json";
+    input.onchange = e => {
+        const file = e.target.files[0];
+        const reader = new FileReader();
+        reader.onload = event => {
+            grid = JSON.parse(event.target.result);
+        };
+        reader.readAsText(file);
+    };
+    input.click();
+};
+
+// ---- MOUSE ----
+let mouse = { x:0, y:0, down:false };
+
+canvas.onmousedown = () => mouse.down = true;
+canvas.onmouseup = () => mouse.down = false;
+canvas.onmousemove = e => {
+    mouse.x = Math.floor(e.clientX / CELL_SIZE);
+    mouse.y = Math.floor(e.clientY / CELL_SIZE);
+};
+
+// ---- RULE HELPERS ----
+function inBounds(x,y) { return x>=0 && y>=0 && x<COLS && y<ROWS; }
+function swap(g, x1,y1, x2,y2) { const t = g[y1][x1]; g[y1][x1]=g[y2][x2]; g[y2][x2]=t; }
+
+// ---- ELEMENT LOGIC ----
+function updateCell(g, x, y) {
+    const cell = g[y][x];
+    if (cell.type === EMPTY || cell.type === WALL) return;
+
+    // ----- SAND -----
+    if (cell.type === SAND) {
+        if (inBounds(x, y+1) && g[y+1][x].type === EMPTY) {
+            swap(g, x,y, x,y+1); return;
+        }
+        // slide
+        let dirs = Math.random() < 0.5 ? [-1,1] : [1,-1];
+        for (let dx of dirs) {
+            if (inBounds(x+dx, y+1) && g[y+1][x+dx].type === EMPTY) {
+                swap(g, x,y, x+dx,y+1); return;
+            }
+        }
+        // displace water
+        if (inBounds(x, y+1) && g[y+1][x].type === WATER) {
+            swap(g, x,y, x,y+1); return;
+        }
+    }
+
+    // ----- WATER -----
+    if (cell.type === WATER) {
+        // fall
+        if (inBounds(x, y+1) && g[y+1][x].type === EMPTY) {
+            swap(g,x,y,x,y+1); return;
+        }
+        // flow sideways
+        let dx = Math.random()<0.5 ? -1 : 1;
+        if (inBounds(x+dx,y) && g[y][x+dx].type===EMPTY) {
+            swap(g,x,y,x+dx,y); return;
+        }
+        // diagonals
+        if (inBounds(x+dx,y+1) && g[y+1][x+dx].type===EMPTY) {
+            swap(g,x,y,x+dx,y+1); return;
+        }
+    }
+
+    // ----- GAS -----
+    if (cell.type === GAS) {
+        if (inBounds(x, y-1) && g[y-1][x].type === EMPTY) {
+            swap(g,x,y,x,y-1); return;
+        }
+        let dx = Math.random()<0.5 ? -1 : 1;
+        if (inBounds(x+dx,y-1) && g[y-1][x+dx].type===EMPTY) {
+            swap(g,x,y,x+dx,y-1); return;
+        }
+    }
+
+    // ----- FIRE -----
+    if (cell.type === FIRE) {
+        cell.energy--;
+        if (cell.energy <= 0) {
+            g[y][x] = { type:GAS, energy:10, temp:60 };
+            return;
+        }
+        // ignite nearby life or sand (heat)
+        const dirs = [[0,1],[0,-1],[1,0],[-1,0]];
+        for (let [dx,dy] of dirs) {
+            if (inBounds(x+dx,y+dy)) {
+                let t = g[y+dy][x+dx];
+                if (t.type === LIFE && Math.random() < 0.05) {
+                    g[y+dy][x+dx] = { type:FIRE, energy:10, temp:80 };
+                }
+            }
+        }
+    }
+
+    // ----- LIFE (cellular automata) -----
+    if (cell.type === LIFE) {
+        cell.energy++;
+        if (cell.energy > 50 && Math.random() < 0.01) {
+            // try reproduce to empty neighbor
+            const dirs = [[0,1],[0,-1],[1,0],[-1,0]];
+            const [dx,dy] = dirs[Math.floor(Math.random()*4)];
+            if (inBounds(x+dx,y+dy) && g[y+dy][x+dx].type===EMPTY) {
+                g[y+dy][x+dx] = { type:LIFE, energy: Math.random()*20, temp:20 };
+                cell.energy = 10;
+            }
+        }
+    }
+}
+
+// ---- MAIN LOOP ----
+let fps=0, frames=0, last=performance.now();
+const debug = document.getElementById("debug");
+
+function loop(now) {
+    // FPS
+    frames++;
+    if (now - last >= 500) {
+        fps = Math.round(frames * 1000 / (now - last));
+        frames = 0;
+        last = now;
+        debug.textContent = `fps: ${fps}`;
+    }
+
+    // mouse draw
+    if (mouse.down) {
+        const size = parseInt(brushSize.value);
+        const type = elementSelect.value;
+
+        for (let dy=-size; dy<=size; dy++) {
+            for (let dx=-size; dx<=size; dx++) {
+                if (dx*dx+dy*dy > size*size) continue;
+                let x = mouse.x+dx;
+                let y = mouse.y+dy;
+                if (!inBounds(x,y)) continue;
+
+                if (type==="erase") {
+                    grid[y][x]=emptyCell();
+                }
+                else if (type==="sand") grid[y][x]={type:SAND,energy:0,temp:20};
+                else if (type==="water") grid[y][x]={type:WATER,energy:0,temp:20};
+                else if (type==="gas") grid[y][x]={type:GAS,energy:10,temp:40};
+                else if (type==="fire") grid[y][x]={type:FIRE,energy:20,temp:80};
+                else if (type==="life") grid[y][x]={type:LIFE,energy:10,temp:20};
+                else if (type==="wall") grid[y][x]={type:WALL,energy:0,temp:0};
+            }
+        }
+    }
+
+    // update grid bottom→top to avoid falling glitches
+    for (let y=ROWS-1; y>=0; y--) {
+        for (let x=0; x<COLS; x++) {
+            updateCell(grid, x, y);
+        }
+    }
+
+    // draw grid
+    ctx.clearRect(0,0,W,H);
+
+    for (let y=0; y<ROWS; y++) {
+        for (let x=0; x<COLS; x++) {
+            const c = grid[y][x];
+            if (c.type === EMPTY) continue;
+
+            let color = "white";
+            if (c.type===SAND) color="#d5c27f";
+            if (c.type===WATER) color="#4aa2ff";
+            if (c.type===GAS) color="rgba(200,200,255,0.5)";
+            if (c.type===FIRE) color="#ff6a00";
+            if (c.type===LIFE) color="#d6ff5c";
+            if (c.type===WALL) color="#444";
+
+            ctx.fillStyle=color;
+            ctx.fillRect(x*CELL_SIZE, y*CELL_SIZE, CELL_SIZE, CELL_SIZE);
+        }
+    }
+
+    requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+
+</body>
+</html>
